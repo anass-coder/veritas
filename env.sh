@@ -14,9 +14,12 @@ tar -xzvf linux-kernel.tar.gz
 
 wget --no-check-certificate  https://zenodo.org/records/16450746/files/vm-image.tar.gz?download=1 -O vm-image.tar.gz
 tar -xzvf vm-image.tar.gz
+
+wget --no-check-certificate  https://zenodo.org/records/16885556/files/vm.img.tar.gz?download=1 -O vm.img.tar.gz
+tar -xzvf vm.img.tar.gz
 popd
 
-
+sudo apt-get install -y make
 # fatal error: sys/capability.h: No such file or directory 
 sudo apt-get install -y libcap-dev
 sudo apt-get install -y libelf-dev
