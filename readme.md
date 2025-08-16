@@ -47,19 +47,6 @@ You can choose to run the evaluation on our server with already setup env or on 
 
 - Execute [`env.sh`](./env.sh) to setup the env.
 
-- **We have already set up a ready enviroment on a 32-core Cloudlab.**
-If you prefer to directly use that environment,
-please share your SSH public key to us throught the Hotcrp.
-Note: Due to limited CPU and memory, performance will degrade linearly.
-
-- Compile the fuzzer
-    ```bash
-    cd syzkaller
-    make
-    ```
-- Replace the `http` field in `fuzzing-dir/ebpf.cfg` with your own ip.
-
-
 ## Run Beacon
 
 - Execute the below command to start the fuzzer
