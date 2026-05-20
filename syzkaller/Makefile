@@ -448,4 +448,12 @@ custom_compilers:
 	g++ ./custom-compilers/dfs-gcc.cc -o ./bin/dfs-gcc
 
 libverify:
-	g++ -fPIC -g -O0 -shared ./syz-manager/ebpf2dafny.cpp -o ./bin/libverify.so
+	g++ -std=c++17 -fPIC -g -O0 -shared \
+	    ./syz-manager/ebpf2dafny.cpp \
+	    ./syz-manager/translator/translator.cpp \
+	    ./syz-manager/translator/arith.cpp \
+	    ./syz-manager/translator/datamov.cpp \
+	    ./syz-manager/translator/memory.cpp \
+		./syz-manager/translator/helpers.cpp \
+	    ./syz-manager/translator/ctrlflow.cpp \
+	    -o ./bin/libverify.so

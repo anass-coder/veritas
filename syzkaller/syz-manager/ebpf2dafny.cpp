@@ -28,6 +28,7 @@
 #include "trancimport.hpp"
 #include "ebpf2dafny.hpp"
 #include "linux-btfs.hpp"
+#include "translator/translator.hpp"
 
 /*
 	TODO:
@@ -1136,115 +1137,124 @@ int VerifyOneProg(char *progAttr1, char *mapAttrs1, int map_cnt, int priv, char 
 
 
 	// ------ Translate initial settings ------ // 
-	// 
-	header << "include \"spec.dfy\"" << "\n" << "method testMain() {" << "\n\t"
-				<< "var s := new State(\n";
-	//
-	// allow_ptr_leak_set:bool, bypass_spec_v1_set:bool, priv_set:bool, has_net_admin:bool
-	header << "\t\t// allow_ptr_leak_set:bool, bypass_spec_v1_set:bool, priv_set:bool, has_net_admin:bool\n";
-	//
+	header << "include \"../ebpf-dafny-spec/arith-spec.dfy\"\n";
+	header << "include \"../ebpf-dafny-spec/datamov-spec.dfy\"\n";
+	header << "include \"../ebpf-dafny-spec/ctrlflow-spec.dfy\"\n";
+	header << "include \"../ebpf-dafny-spec/mem-spec.dfy\"\n";
+	header << "include \"../ebpf-dafny-spec/mem-init.dfy\"\n";
+	header << "include \"../ebpf-dafny-spec/proof-utils.dfy\"\n\n";
+
+	header << "module Tests {\n\n";
+	header << "    import opened Terms\n";
+	header << "    import opened DataTypes\n";
+	header << "    import opened State\n";
+	header << "    import opened MemInit\n\n";
+	header << "    import opened Utils\n\n";
+	header << "    import opened eBPFArithSpec\n";
+	header << "    import opened eBPFDataMoveSpec\n";
+	header << "    import opened eBPFCtrlFlowSpec\n";
+	header << "    import opened eBPFMemSpec\n\n";
+	header << "    import opened ProofUtils\n\n";
+
+	header << "    ghost method {:timeLimit 60} {:priority 10} test(\n";
+	header << "        cfg: ConfigState, rand: bv64\n";
+	header << "    )\n";
+
+	// ------ Encode program metadata as preconditions on cfg ------ //
+	// allow_ptr_leak, bypass_spec_v1, priv, has_net_admin
+	bool allow_ptr_leak = false, bypass_spec_v1 = false;
+	bool priv_set = false, has_net_admin = false;
 	switch (priv) {
 		case PRIV_UNPRIV:
-			header << "\t\t" << "false, false, false, false, \n";
 			break;
 		case PRIV_CAP_BPF:
-			header << "\t\t" << "false, false, true, false, \n";
+			priv_set = true;
 			break;
 		case PRIV_CAP_PERFMON:
-			header << "\t\t" << "true, true, false, false, \n";
+			allow_ptr_leak = true; bypass_spec_v1 = true;
 			break;
 		case PRIV_CAP_NET_ADMIN:
-			header << "\t\t" << "false, false, false, true, \n";
+			has_net_admin = true;
 			break;
 		case PRIV_CAP_SYS_ADMIN:
-			header << "\t\t" << "true, true, true, true, \n";
+			allow_ptr_leak = true; bypass_spec_v1 = true;
+			priv_set = true;       has_net_admin = true;
 			break;
 		default:
 			std::cerr << "privlege error: " << int(priv) << std::endl;
 			return -1;
 	}
-	//
-	// strict_alignment_set:bool
-	// CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS is Y in testing env
-	// Only when BPF_F_ANY_ALIGNMENT is unset while BPF_F_STRICT_ALIGNMENT is set ==> strict == true
+
+	// strict_alignment: only true when STRICT is set and ANY is not.
+	bool strict_alignment = false;
 	if (progAttr->prog_flags & BPF_F_ANY_ALIGNMENT) {
-		header << "\t\t" << "false";
+		strict_alignment = false;
 	} else if (progAttr->prog_flags & BPF_F_STRICT_ALIGNMENT) {
-		header << "\t\t" << "true";
-	} else {
-		header << "\t\t" << "false";
+		strict_alignment = true;
 	}
+
+	header << "        requires cfg.allow_ptr_leak == " << (allow_ptr_leak ? "true" : "false") << "\n";
+	header << "        requires cfg.bypass_spec_v1 == " << (bypass_spec_v1 ? "true" : "false") << "\n";
+	header << "        requires cfg.priv == "           << (priv_set       ? "true" : "false") << "\n";
+	header << "        requires cfg.has_net_admin == "  << (has_net_admin  ? "true" : "false") << "\n";
+	header << "        requires cfg.strict_alignment == " << (strict_alignment ? "true" : "false") << "\n";
+	header << "        requires cfg.progType == "
+				<< bpf_prog_type_str[progAttr->prog_type] << "\n";
+	header << "        requires cfg.attachType == "
+				<< expected_attach_type_str[progAttr->expected_attach_type] << "\n";
+
+	header << "    {\n";
+	header << "        var init_s := init_state(cfg, rand);\n\n";
+
+	// ------ Map information (as assumptions on init_s) ------ //
+	// The new translator does not currently use map information, but record it as assumptions for future use.
+
+	// ------ Translate ebpf bytecode using the new translator ------ //
 	//
-	header << ");\n\t";
+	// The previous range-based translation path (used when runtime_res == -1
+	// and itm_states was available) relied on trans_dafy_wrapper /
+	// itm_state_2_dafny / range-restricted insns2Dafny. The new
+	// insns_to_dafny() always translates the entire program in one pass and
+	// reuses `init_s` as its starting state, so positives and negatives go
+	// through the same call site. itm_states is kept in the signature for
+	// backwards compatibility with callers but is currently unused.
+	(void)itm_states;
+	(void)sample_time;
+	(void)range;
 
-	header << "s.progType := " << bpf_prog_type_str[progAttr->prog_type] << ";\n\t"
-				<< "s.attachType := " << expected_attach_type_str[progAttr->expected_attach_type] << ";\n\n";
-
-	// ------ Translate map informations ------ //
-	header << "\t" << "assume {:axiom} s.maps.Length == " << int(map_cnt) << ";\n";
-	for (int i = 0; i < map_cnt; i++) {
-		if (mapAttrs[i].map_type == 0)
-			continue;
-
-		header << "\t" << "s.CreateMap(" << int(i) << ", "
-					<< bpf_map_type_str[mapAttrs[i].map_type] << ", "
-					<< mapAttrs[i].key_size		<< ", "
-					<< mapAttrs[i].value_size		<< ", "
-					<< mapAttrs[i].max_entries		<< ", "
-					<< mapAttrs[i].flags			<< ", "
-					<< mapAttrs[i].inner_map_fd	<< ");\n";
-	}
-	header << "\n";
-
-	// ------ Translate ebpf bytecode to Dafny code instruction by instruction ------ // 
-	//
 	trans_dafny << header.str();
-	if (runtime_res == -1 && itm_states) {
-        // Negatives -> if it's a bug, then a false negative
-		struct interm_state *latest_state = NULL;
-		range = trans_dafy_wrapper(itm_states, trans_dafny, &latest_state, &sample_time);
-		if (range.end == 0 && range.start == 0) {
-			// std::cerr << "Failed to extract the verificaiton range" << std::endl;
-			return isBug;
-		}
-		trans_cnt = insns2Dafny(progAttr, tmp_dafny, used_regs, &range, &paths1, &trans_time1);
 
-		// used registers
-		if (latest_state) {
-			trans_dafny << "// ";
-			for (size_t i = 0; i < 11; ++i) {
-        		trans_dafny << int(i) << ":" << (used_regs[i] ? "true " : "false ");
-			}
-			trans_dafny << std::endl;
-			itm_state_2_dafny(latest_state, trans_dafny, used_regs);
-		}
+	const int rc = insns_to_dafny(
+		reinterpret_cast<const bpf_insn*>(progAttr->insns),
+		static_cast<int>(progAttr->insn_cnt),
+		trans_dafny,
+		used_regs,
+		&trans_time1
+	);
 
-		trans_dafny << tmp_dafny.str();
+	trans_dafny<< "\n    }\n";
+    trans_dafny<< "}\n";
 
-    	} else {
-        	// Positives -> if it's a bug, then a false positive
-		trans_cnt = insns2Dafny(progAttr, trans_dafny, used_regs, NULL, &paths1, &trans_time1);
-	}
-
-	if (trans_cnt < 1) {
-		sprintf(dafny_veri_log, "return trans_cnt: %ld, insn_cnt: %d\n",  trans_cnt, progAttr->insn_cnt);
+	if (rc < 0) {
+		sprintf(dafny_veri_log,
+		        "return trans_cnt: %d, insn_cnt: %d\n",
+		        rc, progAttr->insn_cnt);
 		return -1;
 	}
 
+
+	trans_cnt = static_cast<uint64_t>(rc);
+	paths1 = 0; // no longer tracked by the new translator
+
+
 	// ------ Run dafny verifier to verify the above translated dafny code ------ // 
 
-	std::string final_dafny = trans_dafny.str() + "\n}";
+	std::string final_dafny = trans_dafny.str() ; 
 	std::string veri_output = execute_cmd(final_dafny, &veri_time1);
 	
 	std::string veri_output_eval;
 	std::string final_dafny_eval;
-	if (is_eval && runtime_res == -1 && itm_states && range.start != 0) {
-		trans_dafny_eval << header.str();
-		trans_cnt2 = insns2Dafny(progAttr, trans_dafny_eval, used_regs, NULL, &paths2, &trans_time2);
-		final_dafny_eval = trans_dafny_eval.str() + "\n}";
-		veri_output_eval = execute_cmd(final_dafny_eval, &veri_time2);
-		is_same_error = (regex_match_error_insn(veri_output) == regex_match_error_insn(veri_output_eval));
-	}
+	
 
 	// write_to_prog_staticstic_log(progAttr->prog_name, progAttr->insn_cnt, alu, ld, mem, ctrl, paths);
 
